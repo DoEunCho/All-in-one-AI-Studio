@@ -21,14 +21,15 @@ import {
   Settings,
   RefreshCw,
   Send,
-  Key,
   ExternalLink,
   ShieldCheck,
   ShieldAlert,
   Cpu,
   Zap,
-  HelpCircle,
-  UserCheck
+  Eye,
+  EyeOff,
+  UserCheck,
+  Key
 } from 'lucide-react';
 import { ToolId, Message } from './types';
 import ImageUpload from './components/ImageUpload';
@@ -36,19 +37,22 @@ import LoadingOverlay from './components/LoadingOverlay';
 import ResultDisplay from './components/ResultDisplay';
 import { GoogleGenAI } from "@google/genai";
 
-// TypeScript 전역 선언을 통한 빌드 오류 방지
-// window.aistudio가 이미 환경에 정의되어 있으므로 readonly 수식어와 함께 올바른 구조로 병합합니다.
+// TypeScript 전역 선언
 declare global {
+  interface AIStudio {
+    hasSelectedApiKey: () => Promise<boolean>;
+    openSelectKey: () => Promise<void>;
+  }
+
+  interface Window {
+    // Fix: Added optional modifier to match potential existing declarations or usage
+    aistudio?: AIStudio;
+  }
+
   namespace NodeJS {
     interface ProcessEnv {
       API_KEY: string;
     }
-  }
-  interface Window {
-    readonly aistudio: {
-      hasSelectedApiKey: () => Promise<boolean>;
-      openSelectKey: () => Promise<void>;
-    };
   }
 }
 
@@ -85,6 +89,10 @@ const App: React.FC = () => {
   
   const [aiEngine, setAiEngine] = useState<'flash' | 'pro'>('flash');
   
+  // API Key 관련 상태 (수동 입력 지원)
+  const [manualKey, setManualKey] = useState(() => localStorage.getItem('gemini_manual_key') || "");
+  const [showKey, setShowKey] = useState(false);
+  
   const [image1, setImage1] = useState<File | null>(null);
   const [image2, setImage2] = useState<File | null>(null);
   const [characterAvatarUrl, setCharacterAvatarUrl] = useState<string | null>(null);
@@ -97,7 +105,12 @@ const App: React.FC = () => {
   ]);
   const [chatInput, setChatInput] = useState("");
 
-  const [apiStatus, setApiStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
+  const [apiStatus, setApiStatus] = useState<'idle' | 'success' | 'error'>('idle');
+
+  // 유효한 API 키를 가져오는 통합 헬퍼
+  const getActiveApiKey = useCallback(() => {
+    return manualKey || process.env.API_KEY || "";
+  }, [manualKey]);
 
   useEffect(() => {
     if (image1) {
@@ -111,48 +124,34 @@ const App: React.FC = () => {
 
   useEffect(() => {
     const checkInitialKey = async () => {
-      if (window.aistudio?.hasSelectedApiKey) {
+      const currentKey = getActiveApiKey();
+      if (currentKey) {
+        setApiStatus('success');
+      } else if (window.aistudio?.hasSelectedApiKey) {
         const hasKey = await window.aistudio.hasSelectedApiKey();
-        if (!hasKey && !process.env.API_KEY) {
-          setIsSettingsOpen(true);
-        } else if (hasKey || process.env.API_KEY) {
-          setApiStatus('success');
-        }
+        if (hasKey) setApiStatus('success');
       }
     };
     checkInitialKey();
-  }, []);
+  }, [getActiveApiKey]);
+
+  const handleManualKeyChange = (val: string) => {
+    setManualKey(val);
+    localStorage.setItem('gemini_manual_key', val);
+    if (val) setApiStatus('idle'); // 키 변경 시 상태 초기화하여 테스트 유도
+  };
 
   const handleOpenKeySelect = async () => {
     try {
       if (window.aistudio?.openSelectKey) {
         await window.aistudio.openSelectKey();
         setApiStatus('success');
-        setIsSettingsOpen(false);
+        setManualKey(""); // 자동 선택 시 수동 키 비움
+        localStorage.removeItem('gemini_manual_key');
       }
     } catch (err) {
       console.error("키 선택 창 열기 실패:", err);
-    }
-  };
-
-  const handleTestConnection = async () => {
-    setApiStatus('testing');
-    try {
-      // API 키 상태 변경에 대응하기 위해 호출 직전에 인스턴스 생성
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: 'ping',
-      });
-      if (response.text) {
-        setApiStatus('success');
-      }
-    } catch (err: any) {
-      setApiStatus('error');
-      if (err.message?.includes("not found")) {
-        alert("선택된 프로젝트가 유효하지 않습니다. 다시 키를 선택해 주세요.");
-        handleOpenKeySelect();
-      }
+      alert("키 선택 창을 열 수 없습니다. 수동 입력을 이용해 주세요.");
     }
   };
 
@@ -183,12 +182,16 @@ const App: React.FC = () => {
   };
 
   const handleGenerate = async () => {
-    if (!process.env.API_KEY) { setIsSettingsOpen(true); return; }
+    const apiKey = getActiveApiKey();
+    if (!apiKey) {
+      setIsSettingsOpen(true);
+      return;
+    }
 
     setLoading(true);
     try {
-      // API 호출 직전에 새 인스턴스 생성 (최신 키 반영 목적)
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      // Create a new instance right before use to ensure the latest API key is used
+      const ai = new GoogleGenAI({ apiKey });
       const parts: any[] = [];
       let systemTask = "";
       
@@ -220,19 +223,35 @@ const App: React.FC = () => {
       const response = await ai.models.generateContent({
         model: targetModel,
         contents: { parts },
-        config: { imageConfig: { aspectRatio: "3:4", imageSize: "1K" } }
+        config: { 
+          imageConfig: { 
+            aspectRatio: "3:4", 
+            // Only use imageSize for Pro model as per guidelines
+            ...(targetModel === 'gemini-3-pro-image-preview' ? { imageSize: "1K" } : {})
+          } 
+        }
       });
 
       const imagePart = response.candidates?.[0]?.content?.parts.find(p => p.inlineData);
       if (imagePart?.inlineData) {
         setResult(`data:${imagePart.inlineData.mimeType};base64,${imagePart.inlineData.data}`);
       } else {
-        alert("생성 결과가 없습니다. 무료 프로젝트라면 'Flash' 모드를 사용하세요.");
+        alert("생성 결과가 없습니다.");
       }
     } catch (error: any) {
       console.error(error);
-      if (error.message?.includes("Requested entity was not found") || error.message?.includes("not found")) {
-        alert("프로젝트를 찾을 수 없습니다. 다시 키를 선택해 주세요.");
+      // Guidelines: handle "Requested entity was not found." error by resetting key selection
+      if (error.message?.includes("Requested entity was not found.")) {
+        setApiStatus('error');
+        setManualKey("");
+        localStorage.removeItem('gemini_manual_key');
+        alert("요청된 엔티티를 찾을 수 없습니다. 올바른 API 키를 다시 선택해 주세요.");
+        if (window.aistudio?.openSelectKey) {
+          handleOpenKeySelect();
+        }
+        setIsSettingsOpen(true);
+      } else if (error.message?.includes("not found")) {
+        alert("API 키 또는 프로젝트가 유효하지 않습니다. 설정을 확인해 주세요.");
         setIsSettingsOpen(true);
       } else {
         alert(`생성 중 오류 발생: ${error.message}`);
@@ -243,19 +262,27 @@ const App: React.FC = () => {
   };
 
   const handleChatSend = async () => {
-    if (!chatInput.trim() || !process.env.API_KEY) { if (!process.env.API_KEY) setIsSettingsOpen(true); return; }
+    if (!chatInput.trim()) return;
+    const apiKey = getActiveApiKey();
+    if (!apiKey) {
+      setIsSettingsOpen(true);
+      return;
+    }
     
     const userMsg: Message = { id: Date.now().toString(), sender: 'user', text: chatInput, timestamp: new Date() };
     setMessages(prev => [...prev, userMsg]);
     const currentInput = chatInput; setChatInput("");
     
     try {
-      // API 호출 직전에 새 인스턴스 생성
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const ai = new GoogleGenAI({ apiKey });
       const parts: any[] = [];
       if (image1) parts.push(await fileToPart(image1));
       parts.push({ text: `Reply to: ${currentInput}` });
-      const response = await ai.models.generateContent({ model: 'gemini-3-flash-preview', contents: { parts } });
+      const response = await ai.models.generateContent({ 
+        model: 'gemini-3-flash-preview', 
+        contents: { parts } 
+      });
+      // Corrected extraction: response.text is a property, not a method
       const aiMsg: Message = { id: (Date.now() + 1).toString(), sender: 'ai', text: response.text || "...", timestamp: new Date() };
       setMessages(prev => [...prev, aiMsg]);
     } catch (error) { 
@@ -303,47 +330,84 @@ const App: React.FC = () => {
             <div className="p-6 border-b border-white/10 flex items-center justify-between bg-white/5">
               <div className="flex items-center gap-3">
                 <div className="p-2 bg-indigo-600/20 rounded-xl"><Settings size={20} className="text-indigo-400" /></div>
-                <h2 className="font-bold text-lg">개별 사용자 API 설정</h2>
+                <h2 className="font-bold text-lg">사용자 API 설정</h2>
               </div>
               <button onClick={() => setIsSettingsOpen(false)} className="p-2 hover:bg-white/5 rounded-xl transition-all"><X size={20} className="text-gray-400" /></button>
             </div>
             
             <div className="p-8 space-y-8 overflow-y-auto custom-scrollbar max-h-[75vh]">
-              <div className="bg-indigo-500/10 border border-indigo-500/20 p-6 rounded-2xl space-y-4">
+              <div className="bg-indigo-500/10 border border-indigo-500/20 p-6 rounded-2xl space-y-6">
                 <div className="flex gap-3">
                   <UserCheck size={20} className="text-indigo-400 shrink-0" />
                   <div>
-                    <p className="text-sm font-bold text-white">사용자님의 API 키로 직접 실행합니다</p>
+                    <p className="text-sm font-bold text-white">Gemini API 키 연결</p>
                     <p className="text-[11px] text-gray-400 mt-1 leading-relaxed">
-                      이 앱은 서버에 키를 저장하지 않습니다. 구글 보안 팝업을 통해 자신의 프로젝트 키를 선택하면 안전하게 AI 도구를 사용할 수 있습니다.
-                      결제 관련 정보는 <a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" rel="noopener noreferrer" className="text-indigo-400 underline inline-flex items-center gap-1">여기<ExternalLink size={10} /></a>에서 확인 가능합니다.
+                      AI 기능을 사용하기 위해 본인의 API 키가 필요합니다. 구글 보안 팝업을 이용하거나, 아래에 직접 키를 입력할 수 있습니다.
                     </p>
                   </div>
                 </div>
                 
-                <div className="grid gap-3">
-                  <button 
-                    onClick={handleOpenKeySelect} 
-                    className="w-full py-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold flex items-center justify-center gap-3 shadow-xl shadow-indigo-600/20 transition-all active:scale-95"
-                  >
-                    <Key size={18} /> 내 API 키 선택/가져오기
-                  </button>
-                  <p className="text-[10px] text-center text-gray-500">※ 팝업에서 "결제 수단이 등록된 프로젝트"를 선택해야 고성능 모델(Pro)이 작동합니다.</p>
+                <div className="space-y-4">
+                  {window.aistudio && (
+                    <button 
+                      onClick={handleOpenKeySelect} 
+                      className="w-full py-4 bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-400 border border-indigo-500/30 rounded-xl font-bold flex items-center justify-center gap-3 transition-all active:scale-95"
+                    >
+                      <Sparkles size={18} /> 프로젝트에서 자동 선택
+                    </button>
+                  )}
+                  
+                  <div className="relative flex items-center py-2">
+                    <div className="flex-grow border-t border-white/5"></div>
+                    <span className="flex-shrink mx-4 text-[10px] text-gray-600 font-bold uppercase tracking-widest">또는 직접 입력</span>
+                    <div className="flex-grow border-t border-white/5"></div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest ml-1">API KEY</label>
+                    <div className="relative">
+                      <input 
+                        type={showKey ? "text" : "password"}
+                        value={manualKey}
+                        onChange={(e) => handleManualKeyChange(e.target.value)}
+                        placeholder="AI Studio에서 발급받은 키 입력..."
+                        className="w-full bg-black/40 border-2 border-white/5 rounded-xl px-10 py-3.5 text-sm focus:border-indigo-500 outline-none transition-all placeholder:text-gray-700"
+                      />
+                      <Key className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-600" size={16} />
+                      <button 
+                        onClick={() => setShowKey(!showKey)}
+                        className="absolute right-3.5 top-1/2 -translate-y-1/2 text-gray-600 hover:text-indigo-400 transition-colors"
+                      >
+                        {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
+                      </button>
+                    </div>
+                    <div className="flex justify-between items-center px-1">
+                      <a 
+                        href="https://aistudio.google.com/app/apikey" 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="text-[10px] text-gray-500 hover:text-indigo-400 flex items-center gap-1 transition-colors"
+                      >
+                        키 발급받기 <ExternalLink size={10} />
+                      </a>
+                      <p className="text-[10px] text-gray-600">※ 키는 브라우저 로컬에만 저장됩니다.</p>
+                    </div>
+                  </div>
                 </div>
               </div>
 
               <div className="space-y-4">
-                <label className="text-xs font-bold text-gray-400 uppercase tracking-widest">AI 이미지 엔진 선택</label>
+                <label className="text-xs font-bold text-gray-400 uppercase tracking-widest">생성 엔진 모드</label>
                 <div className="grid grid-cols-2 gap-3">
                   <button onClick={() => setAiEngine('flash')} className={`p-4 rounded-2xl border-2 flex flex-col gap-2 transition-all text-left ${aiEngine === 'flash' ? 'bg-indigo-600/20 border-indigo-500 shadow-lg shadow-indigo-600/10' : 'bg-white/5 border-white/5 hover:bg-white/10 opacity-60'}`}>
                     <div className="flex items-center justify-between"><Zap size={18} className={aiEngine === 'flash' ? 'text-indigo-400' : 'text-gray-500'} />{aiEngine === 'flash' && <CheckCircle2 size={14} className="text-indigo-400" />}</div>
-                    <span className="font-bold text-sm">무료 모드 (Flash)</span>
-                    <span className="text-[10px] text-gray-400 leading-tight">무료 등급 프로젝트용.</span>
+                    <span className="font-bold text-sm">Flash 모드</span>
+                    <span className="text-[10px] text-gray-400 leading-tight">빠른 처리 속도.</span>
                   </button>
                   <button onClick={() => setAiEngine('pro')} className={`p-4 rounded-2xl border-2 flex flex-col gap-2 transition-all text-left ${aiEngine === 'pro' ? 'bg-indigo-600/20 border-indigo-500 shadow-lg shadow-indigo-600/10' : 'bg-white/5 border-white/5 hover:bg-white/10 opacity-60'}`}>
                     <div className="flex items-center justify-between"><Cpu size={18} className={aiEngine === 'pro' ? 'text-indigo-400' : 'text-gray-500'} />{aiEngine === 'pro' && <CheckCircle2 size={14} className="text-indigo-400" />}</div>
-                    <span className="font-bold text-sm">프로 모드 (Pro)</span>
-                    <span className="text-[10px] text-gray-400 leading-tight">유료 결제 프로젝트용.</span>
+                    <span className="font-bold text-sm">Pro 모드</span>
+                    <span className="text-[10px] text-gray-400 leading-tight">고품질 이미지 생성.</span>
                   </button>
                 </div>
               </div>
@@ -351,16 +415,20 @@ const App: React.FC = () => {
               <div className="flex items-center justify-between pt-4 border-t border-white/5">
                 <div className="flex items-center gap-2">
                   {apiStatus === 'success' ? <ShieldCheck size={14} className="text-green-500" /> : <ShieldAlert size={14} className="text-gray-500" />}
-                  <span className={`text-[10px] font-bold uppercase tracking-tighter ${apiStatus === 'success' ? 'text-green-500' : 'text-gray-500'}`}>{apiStatus === 'success' ? 'API 감지됨' : '키 선택 필요'}</span>
+                  <span className={`text-[10px] font-bold uppercase tracking-tighter ${apiStatus === 'success' ? 'text-green-500' : 'text-gray-500'}`}>
+                    {apiStatus === 'success' ? '연결 성공' : '키 입력 필요'}
+                  </span>
                 </div>
-                <button onClick={handleTestConnection} disabled={apiStatus === 'testing'} className="text-[10px] font-bold text-indigo-400 hover:text-white transition-all disabled:opacity-50 flex items-center gap-1.5">
-                  {apiStatus === 'testing' ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />} 연결 테스트
-                </button>
               </div>
             </div>
 
             <div className="p-6 bg-black/20 border-t border-white/10 flex justify-end gap-3">
-              <button onClick={() => setIsSettingsOpen(false)} className="px-8 py-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-sm font-bold transition-all shadow-lg shadow-indigo-600/20 active:scale-95">설정 완료 후 시작하기</button>
+              <button 
+                onClick={() => setIsSettingsOpen(false)} 
+                className="px-8 py-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-sm font-bold transition-all shadow-lg shadow-indigo-600/20 active:scale-95"
+              >
+                저장 후 닫기
+              </button>
             </div>
           </div>
         </div>
@@ -396,8 +464,9 @@ const App: React.FC = () => {
                 {aiEngine === 'flash' ? 'Flash Mode' : 'Pro Mode'}
               </span>
             </div>
-            <button onClick={() => setIsSettingsOpen(true)} className="p-2.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl transition-all active:scale-95 group">
+            <button onClick={() => setIsSettingsOpen(true)} className="p-2.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl transition-all active:scale-95 group relative">
               <Settings size={20} className="text-gray-400 group-hover:text-white group-hover:rotate-45 transition-all" />
+              {(apiStatus !== 'success') && <span className="absolute top-0 right-0 w-2 h-2 bg-red-500 rounded-full animate-ping"></span>}
             </button>
           </div>
         </header>
