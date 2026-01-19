@@ -29,7 +29,9 @@ import {
   Eye,
   EyeOff,
   UserCheck,
-  Key
+  Key,
+  AlertCircle,
+  AlertTriangle
 } from 'lucide-react';
 import { ToolId, Message } from './types';
 import ImageUpload from './components/ImageUpload';
@@ -45,7 +47,6 @@ declare global {
   }
 
   interface Window {
-    // Fix: Added optional modifier to match potential existing declarations or usage
     aistudio?: AIStudio;
   }
 
@@ -105,7 +106,8 @@ const App: React.FC = () => {
   ]);
   const [chatInput, setChatInput] = useState("");
 
-  const [apiStatus, setApiStatus] = useState<'idle' | 'success' | 'error'>('idle');
+  const [apiStatus, setApiStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
+  const [testErrorMessage, setTestErrorMessage] = useState<string | null>(null);
 
   // 유효한 API 키를 가져오는 통합 헬퍼
   const getActiveApiKey = useCallback(() => {
@@ -138,7 +140,45 @@ const App: React.FC = () => {
   const handleManualKeyChange = (val: string) => {
     setManualKey(val);
     localStorage.setItem('gemini_manual_key', val);
-    if (val) setApiStatus('idle'); // 키 변경 시 상태 초기화하여 테스트 유도
+    setApiStatus('idle'); // 키 변경 시 상태 초기화
+    setTestErrorMessage(null);
+  };
+
+  // 연결 테스트 함수
+  const handleTestConnection = async () => {
+    const keyToTest = manualKey || process.env.API_KEY;
+    if (!keyToTest) {
+      setApiStatus('error');
+      setTestErrorMessage("테스트할 API 키가 없습니다. 키를 입력해 주세요.");
+      return;
+    }
+
+    setApiStatus('testing');
+    setTestErrorMessage(null);
+    try {
+      const ai = new GoogleGenAI({ apiKey: keyToTest });
+      // 아주 가벼운 텍스트 생성 요청으로 키 유효성 확인
+      const response = await ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: 'ping',
+      });
+      
+      if (response.text) {
+        setApiStatus('success');
+      } else {
+        setApiStatus('error');
+        setTestErrorMessage("응답을 받았으나 텍스트가 비어있습니다.");
+      }
+    } catch (err: any) {
+      console.error("Connection test failed:", err);
+      setApiStatus('error');
+      // 오류 메시지 가공 (사용자 친화적으로)
+      let msg = err.message || "알 수 없는 오류가 발생했습니다.";
+      if (msg.includes("403")) msg = "API 키가 올바르지 않거나 권한이 없습니다 (403).";
+      if (msg.includes("404")) msg = "모델을 찾을 수 없습니다 (404).";
+      if (msg.includes("429")) msg = "할당량 초과: 잠시 후 다시 시도하세요 (429).";
+      setTestErrorMessage(msg);
+    }
   };
 
   const handleOpenKeySelect = async () => {
@@ -146,12 +186,14 @@ const App: React.FC = () => {
       if (window.aistudio?.openSelectKey) {
         await window.aistudio.openSelectKey();
         setApiStatus('success');
+        setTestErrorMessage(null);
         setManualKey(""); // 자동 선택 시 수동 키 비움
         localStorage.removeItem('gemini_manual_key');
       }
     } catch (err) {
       console.error("키 선택 창 열기 실패:", err);
-      alert("키 선택 창을 열 수 없습니다. 수동 입력을 이용해 주세요.");
+      setApiStatus('error');
+      setTestErrorMessage("키 선택 창을 열 수 없습니다.");
     }
   };
 
@@ -190,7 +232,6 @@ const App: React.FC = () => {
 
     setLoading(true);
     try {
-      // Create a new instance right before use to ensure the latest API key is used
       const ai = new GoogleGenAI({ apiKey });
       const parts: any[] = [];
       let systemTask = "";
@@ -226,7 +267,6 @@ const App: React.FC = () => {
         config: { 
           imageConfig: { 
             aspectRatio: "3:4", 
-            // Only use imageSize for Pro model as per guidelines
             ...(targetModel === 'gemini-3-pro-image-preview' ? { imageSize: "1K" } : {})
           } 
         }
@@ -240,21 +280,17 @@ const App: React.FC = () => {
       }
     } catch (error: any) {
       console.error(error);
-      // Guidelines: handle "Requested entity was not found." error by resetting key selection
-      if (error.message?.includes("Requested entity was not found.")) {
+      const errorMsg = error.message || "";
+      if (errorMsg.includes("429") || errorMsg.toLowerCase().includes("quota")) {
+        alert("⚠️ API 할당량 초과: 무료 티어 사용량을 모두 소모했습니다. 잠시 후 다시 시도하거나, 설정에서 'Pro 모드'로 변경(유료 프로젝트 키 필요)해 주세요.");
+      } else if (errorMsg.includes("Requested entity was not found.")) {
         setApiStatus('error');
         setManualKey("");
         localStorage.removeItem('gemini_manual_key');
-        alert("요청된 엔티티를 찾을 수 없습니다. 올바른 API 키를 다시 선택해 주세요.");
-        if (window.aistudio?.openSelectKey) {
-          handleOpenKeySelect();
-        }
-        setIsSettingsOpen(true);
-      } else if (error.message?.includes("not found")) {
-        alert("API 키 또는 프로젝트가 유효하지 않습니다. 설정을 확인해 주세요.");
+        alert("요청된 프로젝트를 찾을 수 없습니다. 올바른 API 키를 다시 선택하거나 입력해 주세요.");
         setIsSettingsOpen(true);
       } else {
-        alert(`생성 중 오류 발생: ${error.message}`);
+        alert(`생성 중 오류 발생: ${errorMsg}`);
       }
     } finally {
       setLoading(false);
@@ -282,11 +318,15 @@ const App: React.FC = () => {
         model: 'gemini-3-flash-preview', 
         contents: { parts } 
       });
-      // Corrected extraction: response.text is a property, not a method
       const aiMsg: Message = { id: (Date.now() + 1).toString(), sender: 'ai', text: response.text || "...", timestamp: new Date() };
       setMessages(prev => [...prev, aiMsg]);
-    } catch (error) { 
-      setMessages(prev => [...prev, { id: 'err', sender: 'ai', text: "메시지 전송 오류가 발생했습니다.", timestamp: new Date() }]);
+    } catch (error: any) {
+      const errorMsg = error.message || "";
+      let systemErrorText = "메시지 전송 오류가 발생했습니다.";
+      if (errorMsg.includes("429") || errorMsg.toLowerCase().includes("quota")) {
+        systemErrorText = "⚠️ 할당량 초과: 무료 사용량을 다 썼습니다. 잠시 후 다시 대화해 주세요.";
+      }
+      setMessages(prev => [...prev, { id: 'err', sender: 'ai', text: systemErrorText, timestamp: new Date() }]);
     }
   };
 
@@ -390,35 +430,65 @@ const App: React.FC = () => {
                       >
                         키 발급받기 <ExternalLink size={10} />
                       </a>
-                      <p className="text-[10px] text-gray-600">※ 키는 브라우저 로컬에만 저장됩니다.</p>
+                      <button 
+                        onClick={handleTestConnection}
+                        disabled={apiStatus === 'testing' || (!manualKey && !process.env.API_KEY)}
+                        className="text-[10px] font-bold text-indigo-400 hover:text-white flex items-center gap-1.5 transition-all disabled:opacity-30 px-2 py-1 bg-indigo-400/5 hover:bg-indigo-400/20 rounded-lg border border-indigo-400/20"
+                      >
+                        {apiStatus === 'testing' ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+                        연결 테스트
+                      </button>
                     </div>
                   </div>
                 </div>
               </div>
 
               <div className="space-y-4">
-                <label className="text-xs font-bold text-gray-400 uppercase tracking-widest">생성 엔진 모드</label>
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-gray-400 uppercase tracking-widest">생성 엔진 모드</label>
+                  {aiEngine === 'flash' && (
+                    <span className="text-[9px] text-amber-500 flex items-center gap-1 font-bold animate-pulse">
+                      <AlertCircle size={10} /> 무료 티어는 횟수 제한이 큼
+                    </span>
+                  )}
+                </div>
                 <div className="grid grid-cols-2 gap-3">
                   <button onClick={() => setAiEngine('flash')} className={`p-4 rounded-2xl border-2 flex flex-col gap-2 transition-all text-left ${aiEngine === 'flash' ? 'bg-indigo-600/20 border-indigo-500 shadow-lg shadow-indigo-600/10' : 'bg-white/5 border-white/5 hover:bg-white/10 opacity-60'}`}>
                     <div className="flex items-center justify-between"><Zap size={18} className={aiEngine === 'flash' ? 'text-indigo-400' : 'text-gray-500'} />{aiEngine === 'flash' && <CheckCircle2 size={14} className="text-indigo-400" />}</div>
                     <span className="font-bold text-sm">Flash 모드</span>
-                    <span className="text-[10px] text-gray-400 leading-tight">빠른 처리 속도.</span>
+                    <span className="text-[10px] text-gray-400 leading-tight">빠른 속도 / 무료 등급</span>
                   </button>
                   <button onClick={() => setAiEngine('pro')} className={`p-4 rounded-2xl border-2 flex flex-col gap-2 transition-all text-left ${aiEngine === 'pro' ? 'bg-indigo-600/20 border-indigo-500 shadow-lg shadow-indigo-600/10' : 'bg-white/5 border-white/5 hover:bg-white/10 opacity-60'}`}>
                     <div className="flex items-center justify-between"><Cpu size={18} className={aiEngine === 'pro' ? 'text-indigo-400' : 'text-gray-500'} />{aiEngine === 'pro' && <CheckCircle2 size={14} className="text-indigo-400" />}</div>
                     <span className="font-bold text-sm">Pro 모드</span>
-                    <span className="text-[10px] text-gray-400 leading-tight">고품질 이미지 생성.</span>
+                    <span className="text-[10px] text-gray-400 leading-tight">고품질 / 유료 결제 필요</span>
                   </button>
                 </div>
+                {aiEngine === 'pro' && (
+                  <p className="text-[10px] text-indigo-400/80 italic text-center">Pro 모드는 Gemini 유료 플랜이 활성화된 API 키에서만 작동합니다.</p>
+                )}
               </div>
 
-              <div className="flex items-center justify-between pt-4 border-t border-white/5">
-                <div className="flex items-center gap-2">
-                  {apiStatus === 'success' ? <ShieldCheck size={14} className="text-green-500" /> : <ShieldAlert size={14} className="text-gray-500" />}
-                  <span className={`text-[10px] font-bold uppercase tracking-tighter ${apiStatus === 'success' ? 'text-green-500' : 'text-gray-500'}`}>
-                    {apiStatus === 'success' ? '연결 성공' : '키 입력 필요'}
-                  </span>
+              <div className="pt-4 border-t border-white/5 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    {apiStatus === 'success' ? <ShieldCheck size={16} className="text-green-500" /> : (apiStatus === 'error' ? <ShieldAlert size={16} className="text-red-500" /> : <ShieldAlert size={16} className="text-gray-500" />)}
+                    <span className={`text-xs font-bold uppercase tracking-widest ${apiStatus === 'success' ? 'text-green-500' : (apiStatus === 'error' ? 'text-red-500' : 'text-gray-500')}`}>
+                      {apiStatus === 'success' ? '연결 성공' : (apiStatus === 'error' ? '연결 실패' : (apiStatus === 'testing' ? '테스트 중...' : '키 확인 필요'))}
+                    </span>
+                  </div>
+                  {apiStatus === 'success' && <div className="text-[10px] bg-green-500/10 text-green-500 px-2 py-0.5 rounded-full border border-green-500/20 font-bold uppercase">사용 가능</div>}
                 </div>
+                
+                {apiStatus === 'error' && testErrorMessage && (
+                  <div className="flex gap-2 p-3 bg-red-500/10 border border-red-500/20 rounded-xl">
+                    <AlertTriangle size={14} className="text-red-500 shrink-0 mt-0.5" />
+                    <div className="space-y-1">
+                      <p className="text-[11px] font-bold text-red-500 uppercase">오류 원인</p>
+                      <p className="text-[10px] text-red-400/80 leading-relaxed font-medium">{testErrorMessage}</p>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 
