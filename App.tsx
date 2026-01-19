@@ -31,7 +31,8 @@ import {
   UserCheck,
   Key,
   AlertCircle,
-  AlertTriangle
+  AlertTriangle,
+  Info
 } from 'lucide-react';
 import { ToolId, Message } from './types';
 import ImageUpload from './components/ImageUpload';
@@ -107,6 +108,7 @@ const App: React.FC = () => {
   const [chatInput, setChatInput] = useState("");
 
   const [apiStatus, setApiStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
+  const [verifiedEngine, setVerifiedEngine] = useState<'flash' | 'pro' | null>(null);
   const [testErrorMessage, setTestErrorMessage] = useState<string | null>(null);
 
   // 유효한 API 키를 가져오는 통합 헬퍼
@@ -124,14 +126,27 @@ const App: React.FC = () => {
     }
   }, [image1]);
 
+  // 엔진 모드가 바뀌면 기존 검증 상태 해제 (Pro는 Pro용 키가 필요하므로)
+  useEffect(() => {
+    if (verifiedEngine !== aiEngine) {
+      setApiStatus('idle');
+      setTestErrorMessage(null);
+    }
+  }, [aiEngine, verifiedEngine]);
+
   useEffect(() => {
     const checkInitialKey = async () => {
       const currentKey = getActiveApiKey();
       if (currentKey) {
+        // 초기 로드 시에는 기본적으로 Success로 두되 엔진 체크는 보수적으로 처리
         setApiStatus('success');
+        setVerifiedEngine(aiEngine);
       } else if (window.aistudio?.hasSelectedApiKey) {
         const hasKey = await window.aistudio.hasSelectedApiKey();
-        if (hasKey) setApiStatus('success');
+        if (hasKey) {
+          setApiStatus('success');
+          setVerifiedEngine(aiEngine);
+        }
       }
     };
     checkInitialKey();
@@ -140,7 +155,8 @@ const App: React.FC = () => {
   const handleManualKeyChange = (val: string) => {
     setManualKey(val);
     localStorage.setItem('gemini_manual_key', val);
-    setApiStatus('idle'); // 키 변경 시 상태 초기화
+    setApiStatus('idle');
+    setVerifiedEngine(null);
     setTestErrorMessage(null);
   };
 
@@ -155,28 +171,40 @@ const App: React.FC = () => {
 
     setApiStatus('testing');
     setTestErrorMessage(null);
+    
+    // 선택된 엔진 모드에 따라 테스트할 모델 결정
+    // Pro 모드는 gemini-3-pro 모델에 접근 가능한지 테스트해야 함
+    const testModel = aiEngine === 'pro' ? 'gemini-3-pro-preview' : 'gemini-3-flash-preview';
+    
     try {
       const ai = new GoogleGenAI({ apiKey: keyToTest });
-      // 아주 가벼운 텍스트 생성 요청으로 키 유효성 확인
       const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
+        model: testModel,
         contents: 'ping',
       });
       
       if (response.text) {
         setApiStatus('success');
+        setVerifiedEngine(aiEngine);
       } else {
         setApiStatus('error');
-        setTestErrorMessage("응답을 받았으나 텍스트가 비어있습니다.");
+        setTestErrorMessage(`${aiEngine === 'pro' ? 'Pro' : 'Flash'} 모델 응답이 올바르지 않습니다.`);
       }
     } catch (err: any) {
       console.error("Connection test failed:", err);
       setApiStatus('error');
-      // 오류 메시지 가공 (사용자 친화적으로)
+      setVerifiedEngine(null);
       let msg = err.message || "알 수 없는 오류가 발생했습니다.";
-      if (msg.includes("403")) msg = "API 키가 올바르지 않거나 권한이 없습니다 (403).";
-      if (msg.includes("404")) msg = "모델을 찾을 수 없습니다 (404).";
-      if (msg.includes("429")) msg = "할당량 초과: 잠시 후 다시 시도하세요 (429).";
+      
+      // Pro 모델 접근 실패 케이스 상세 안내
+      if (aiEngine === 'pro' && (msg.includes("403") || msg.includes("404") || msg.toLowerCase().includes("not found"))) {
+        msg = "Pro 모드 테스트 실패: 현재 입력하신 API 키는 Pro 모델(Paid Tier)에 접근 권한이 없습니다. 무료 키를 사용 중이시라면 'Flash 모드'를 선택해 주세요.";
+      } else if (msg.includes("limit: 0")) {
+        msg = "할당량 제한(Limit: 0) 오류입니다. 해당 API 키의 프로젝트 설정에서 Generative Language API가 활성화되지 않았거나 리전 제한이 있습니다.";
+      } else if (msg.includes("429")) {
+        msg = "할당량 초과(429 Too Many Requests). 잠시 후 다시 시도하세요.";
+      }
+      
       setTestErrorMessage(msg);
     }
   };
@@ -186,8 +214,9 @@ const App: React.FC = () => {
       if (window.aistudio?.openSelectKey) {
         await window.aistudio.openSelectKey();
         setApiStatus('success');
+        setVerifiedEngine(aiEngine);
         setTestErrorMessage(null);
-        setManualKey(""); // 자동 선택 시 수동 키 비움
+        setManualKey(""); 
         localStorage.removeItem('gemini_manual_key');
       }
     } catch (err) {
@@ -231,58 +260,83 @@ const App: React.FC = () => {
     }
 
     setLoading(true);
-    try {
-      const ai = new GoogleGenAI({ apiKey });
-      const parts: any[] = [];
-      let systemTask = "";
-      
-      if (activeTab === ToolId.VirtualModelFitting) {
-        systemTask = `AI ${option} model with items.`;
-        for (const file of itemImages) if (file) parts.push(await fileToPart(file));
-      } else if (activeTab === ToolId.ItemSynthesis) {
-        if (image1) parts.push(await fileToPart(image1));
-        systemTask = "Synthesize items naturally.";
-        for (const file of itemImages) if (file) parts.push(await fileToPart(file));
-      } else {
-        if (image1) parts.push(await fileToPart(image1));
-        if (image2) parts.push(await fileToPart(image2));
-        switch (activeTab) {
-          case ToolId.MagicEditor: systemTask = `Edit: ${prompt}`; break;
-          case ToolId.SketchToWebtoon: systemTask = "Webtoon style"; break;
-          case ToolId.IDPhotoMaker: systemTask = `ID photo ${option}.`; break;
-          case ToolId.FaceHairChanger: systemTask = "New hairstyle"; break;
-          case ToolId.FutureBaby: systemTask = `Predict baby ${option}.`; break;
-          case ToolId.AdPosterMaker: systemTask = `Ad poster: ${prompt}`; break;
-          case ToolId.TimeTraveler: systemTask = `Travel to ${option}.`; break;
-          case ToolId.Character360: systemTask = "360 view"; break;
-        }
-      }
-      
-      parts.push({ text: systemTask });
-      const targetModel = aiEngine === 'pro' ? 'gemini-3-pro-image-preview' : 'gemini-2.5-flash-image';
-      
-      const response = await ai.models.generateContent({
-        model: targetModel,
-        contents: { parts },
-        config: { 
-          imageConfig: { 
-            aspectRatio: "3:4", 
-            ...(targetModel === 'gemini-3-pro-image-preview' ? { imageSize: "1K" } : {})
-          } 
-        }
-      });
+    let retryCount = 0;
+    const maxRetries = 2;
 
-      const imagePart = response.candidates?.[0]?.content?.parts.find(p => p.inlineData);
-      if (imagePart?.inlineData) {
-        setResult(`data:${imagePart.inlineData.mimeType};base64,${imagePart.inlineData.data}`);
-      } else {
-        alert("생성 결과가 없습니다.");
+    const performGeneration = async (): Promise<void> => {
+      try {
+        const ai = new GoogleGenAI({ apiKey });
+        const parts: any[] = [];
+        let systemTask = "";
+        
+        if (activeTab === ToolId.VirtualModelFitting) {
+          systemTask = `AI ${option} model with items.`;
+          for (const file of itemImages) if (file) parts.push(await fileToPart(file));
+        } else if (activeTab === ToolId.ItemSynthesis) {
+          if (image1) parts.push(await fileToPart(image1));
+          systemTask = "Synthesize items naturally.";
+          for (const file of itemImages) if (file) parts.push(await fileToPart(file));
+        } else {
+          if (image1) parts.push(await fileToPart(image1));
+          if (image2) parts.push(await fileToPart(image2));
+          switch (activeTab) {
+            case ToolId.MagicEditor: systemTask = `Edit: ${prompt}`; break;
+            case ToolId.SketchToWebtoon: systemTask = "Webtoon style"; break;
+            case ToolId.IDPhotoMaker: systemTask = `ID photo ${option}.`; break;
+            case ToolId.FaceHairChanger: systemTask = "New hairstyle"; break;
+            case ToolId.FutureBaby: systemTask = `Predict baby ${option}.`; break;
+            case ToolId.AdPosterMaker: systemTask = `Ad poster: ${prompt}`; break;
+            case ToolId.TimeTraveler: systemTask = `Travel to ${option}.`; break;
+            case ToolId.Character360: systemTask = "360 view"; break;
+          }
+        }
+        
+        parts.push({ text: systemTask });
+        const targetModel = aiEngine === 'pro' ? 'gemini-3-pro-image-preview' : 'gemini-2.5-flash-image';
+        
+        const response = await ai.models.generateContent({
+          model: targetModel,
+          contents: { parts },
+          config: { 
+            imageConfig: { 
+              aspectRatio: "3:4", 
+              ...(targetModel === 'gemini-3-pro-image-preview' ? { imageSize: "1K" } : {})
+            } 
+          }
+        });
+
+        const imagePart = response.candidates?.[0]?.content?.parts.find(p => p.inlineData);
+        if (imagePart?.inlineData) {
+          setResult(`data:${imagePart.inlineData.mimeType};base64,${imagePart.inlineData.data}`);
+        } else {
+          throw new Error("생성 결과 이미지가 응답에 포함되어 있지 않습니다.");
+        }
+      } catch (error: any) {
+        const errorMsg = error.message || "";
+        
+        // Retry logic for 429
+        if ((errorMsg.includes("429") || errorMsg.toLowerCase().includes("quota")) && retryCount < maxRetries) {
+          retryCount++;
+          const waitTime = Math.pow(2, retryCount) * 1000;
+          console.warn(`429 detected, retrying in ${waitTime}ms... (${retryCount}/${maxRetries})`);
+          await new Promise(res => setTimeout(res, waitTime));
+          return performGeneration();
+        }
+
+        throw error;
       }
+    };
+
+    try {
+      await performGeneration();
     } catch (error: any) {
       console.error(error);
       const errorMsg = error.message || "";
-      if (errorMsg.includes("429") || errorMsg.toLowerCase().includes("quota")) {
-        alert("⚠️ API 할당량 초과: 무료 티어 사용량을 모두 소모했습니다. 잠시 후 다시 시도하거나, 설정에서 'Pro 모드'로 변경(유료 프로젝트 키 필요)해 주세요.");
+      
+      if (errorMsg.includes("limit: 0")) {
+        alert("⚠️ [할당량 제한 오류] 현재 사용 중인 API 키의 프로젝트 설정에서 이미지 생성 모델이 활성화되지 않았거나 리전 제한이 있습니다. Google Cloud Console에서 'Generative Language API'가 정상적으로 활성화되었는지 확인하시거나, 다른 API 키를 사용해 주세요.");
+      } else if (errorMsg.includes("429") || errorMsg.toLowerCase().includes("quota")) {
+        alert("⚠️ [할당량 초과] 무료 티어의 분당/일일 사용량을 모두 소모했습니다. 약 1분 후 다시 시도하거나, 설정에서 'Pro 모드'로 변경(유료 키 필요)해 주세요.");
       } else if (errorMsg.includes("Requested entity was not found.")) {
         setApiStatus('error');
         setManualKey("");
@@ -465,7 +519,10 @@ const App: React.FC = () => {
                   </button>
                 </div>
                 {aiEngine === 'pro' && (
-                  <p className="text-[10px] text-indigo-400/80 italic text-center">Pro 모드는 Gemini 유료 플랜이 활성화된 API 키에서만 작동합니다.</p>
+                  <div className="p-3 bg-indigo-500/5 border border-indigo-500/20 rounded-xl flex gap-2">
+                    <Info size={12} className="text-indigo-400 shrink-0 mt-0.5" />
+                    <p className="text-[10px] text-indigo-300/80 italic leading-tight">Pro 모드는 Gemini 유료 플랜이 활성화된 API 키에서만 작동하며 고해상도 이미지를 생성합니다.</p>
+                  </div>
                 )}
               </div>
 
@@ -473,19 +530,29 @@ const App: React.FC = () => {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     {apiStatus === 'success' ? <ShieldCheck size={16} className="text-green-500" /> : (apiStatus === 'error' ? <ShieldAlert size={16} className="text-red-500" /> : <ShieldAlert size={16} className="text-gray-500" />)}
-                    <span className={`text-xs font-bold uppercase tracking-widest ${apiStatus === 'success' ? 'text-green-500' : (apiStatus === 'error' ? 'text-red-500' : 'text-gray-500')}`}>
-                      {apiStatus === 'success' ? '연결 성공' : (apiStatus === 'error' ? '연결 실패' : (apiStatus === 'testing' ? '테스트 중...' : '키 확인 필요'))}
+                    <span className={`text-xs font-bold uppercase tracking-widest ${apiStatus === 'success' ? 'text-green-500' : (apiStatus === 'error' ? 'text-red-500' : (apiStatus === 'testing' ? 'text-indigo-400' : 'text-gray-500'))}`}>
+                      {apiStatus === 'success' ? `${verifiedEngine === 'pro' ? 'Pro' : 'Flash'} 연결 성공` : (apiStatus === 'error' ? '연결 실패' : (apiStatus === 'testing' ? '테스트 중...' : '키 확인 필요'))}
                     </span>
                   </div>
-                  {apiStatus === 'success' && <div className="text-[10px] bg-green-500/10 text-green-500 px-2 py-0.5 rounded-full border border-green-500/20 font-bold uppercase">사용 가능</div>}
+                  {apiStatus === 'success' && verifiedEngine === aiEngine && <div className="text-[10px] bg-green-500/10 text-green-500 px-2 py-0.5 rounded-full border border-green-500/20 font-bold uppercase">사용 가능</div>}
                 </div>
                 
                 {apiStatus === 'error' && testErrorMessage && (
                   <div className="flex gap-2 p-3 bg-red-500/10 border border-red-500/20 rounded-xl">
                     <AlertTriangle size={14} className="text-red-500 shrink-0 mt-0.5" />
                     <div className="space-y-1">
-                      <p className="text-[11px] font-bold text-red-500 uppercase">오류 원인</p>
+                      <p className="text-[11px] font-bold text-red-500 uppercase">오류 분석</p>
                       <p className="text-[10px] text-red-400/80 leading-relaxed font-medium">{testErrorMessage}</p>
+                    </div>
+                  </div>
+                )}
+                
+                {apiStatus === 'success' && verifiedEngine !== aiEngine && (
+                  <div className="flex gap-2 p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl">
+                    <Info size={14} className="text-amber-500 shrink-0 mt-0.5" />
+                    <div className="space-y-1">
+                      <p className="text-[11px] font-bold text-amber-500 uppercase">모드 변경 감지</p>
+                      <p className="text-[10px] text-amber-400/80 leading-relaxed font-medium">선택된 엔진 모드가 이전 테스트 모드와 다릅니다. {aiEngine === 'pro' ? 'Pro' : 'Flash'} 모드 사용을 위해 다시 '연결 테스트'를 진행해 주세요.</p>
                     </div>
                   </div>
                 )}
@@ -536,7 +603,7 @@ const App: React.FC = () => {
             </div>
             <button onClick={() => setIsSettingsOpen(true)} className="p-2.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl transition-all active:scale-95 group relative">
               <Settings size={20} className="text-gray-400 group-hover:text-white group-hover:rotate-45 transition-all" />
-              {(apiStatus !== 'success') && <span className="absolute top-0 right-0 w-2 h-2 bg-red-500 rounded-full animate-ping"></span>}
+              {(apiStatus !== 'success' || verifiedEngine !== aiEngine) && <span className="absolute top-0 right-0 w-2 h-2 bg-amber-500 rounded-full animate-ping"></span>}
             </button>
           </div>
         </header>
