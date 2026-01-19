@@ -37,7 +37,7 @@ import ResultDisplay from './components/ResultDisplay';
 import { GoogleGenAI } from "@google/genai";
 
 // TypeScript 전역 선언을 통한 빌드 오류 방지
-// aistudio는 이미 AIStudio 타입으로 정의되어 있으므로 해당 타입을 사용하도록 수정합니다.
+// window.aistudio가 이미 환경에 정의되어 있으므로 readonly 수식어와 함께 올바른 구조로 병합합니다.
 declare global {
   namespace NodeJS {
     interface ProcessEnv {
@@ -45,7 +45,10 @@ declare global {
     }
   }
   interface Window {
-    aistudio: AIStudio;
+    readonly aistudio: {
+      hasSelectedApiKey: () => Promise<boolean>;
+      openSelectKey: () => Promise<void>;
+    };
   }
 }
 
@@ -135,6 +138,7 @@ const App: React.FC = () => {
   const handleTestConnection = async () => {
     setApiStatus('testing');
     try {
+      // API 키 상태 변경에 대응하기 위해 호출 직전에 인스턴스 생성
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
@@ -183,6 +187,7 @@ const App: React.FC = () => {
 
     setLoading(true);
     try {
+      // API 호출 직전에 새 인스턴스 생성 (최신 키 반영 목적)
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const parts: any[] = [];
       let systemTask = "";
@@ -226,7 +231,7 @@ const App: React.FC = () => {
       }
     } catch (error: any) {
       console.error(error);
-      if (error.message?.includes("not found")) {
+      if (error.message?.includes("Requested entity was not found") || error.message?.includes("not found")) {
         alert("프로젝트를 찾을 수 없습니다. 다시 키를 선택해 주세요.");
         setIsSettingsOpen(true);
       } else {
@@ -245,6 +250,7 @@ const App: React.FC = () => {
     const currentInput = chatInput; setChatInput("");
     
     try {
+      // API 호출 직전에 새 인스턴스 생성
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const parts: any[] = [];
       if (image1) parts.push(await fileToPart(image1));
@@ -310,6 +316,7 @@ const App: React.FC = () => {
                     <p className="text-sm font-bold text-white">사용자님의 API 키로 직접 실행합니다</p>
                     <p className="text-[11px] text-gray-400 mt-1 leading-relaxed">
                       이 앱은 서버에 키를 저장하지 않습니다. 구글 보안 팝업을 통해 자신의 프로젝트 키를 선택하면 안전하게 AI 도구를 사용할 수 있습니다.
+                      결제 관련 정보는 <a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" rel="noopener noreferrer" className="text-indigo-400 underline inline-flex items-center gap-1">여기<ExternalLink size={10} /></a>에서 확인 가능합니다.
                     </p>
                   </div>
                 </div>
