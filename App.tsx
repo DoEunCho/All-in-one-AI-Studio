@@ -32,7 +32,9 @@ import {
   Key,
   AlertCircle,
   AlertTriangle,
-  Info
+  Info,
+  ArrowUpRight,
+  CreditCard
 } from 'lucide-react';
 import { ToolId, Message } from './types';
 import ImageUpload from './components/ImageUpload';
@@ -173,15 +175,15 @@ const App: React.FC = () => {
     setTestErrorMessage(null);
     setGenerationError(null);
     
-    // 이미지 모델 접근성 테스트를 위해 명시적으로 지정
+    // 이미지 모델 접근성 테스트
     const testModel = aiEngine === 'pro' ? 'gemini-3-pro-preview' : 'gemini-2.5-flash-image';
     
     try {
       const ai = new GoogleGenAI({ apiKey: keyToTest });
-      // 실제 생성 없이 최소한의 요청으로 권한 확인
+      // 실제 생성 대신 모델 정보만 확인하려 시도
       await ai.models.generateContent({
         model: testModel,
-        contents: 'test',
+        contents: 'hi',
       });
       
       setApiStatus('success');
@@ -192,29 +194,15 @@ const App: React.FC = () => {
       setVerifiedEngine(null);
       let msg = err.message || "연결 실패";
       
-      // 구체적인 에러 코드 분석
       if (msg.toLowerCase().includes("limit: 0")) {
-        msg = "⚠️ [중요] 할당량 없음(Limit: 0). 이 키는 텍스트는 가능할지라도 이미지 생성 권한이 0으로 설정되어 있습니다. Google Cloud Console에서 'Generative Language API' 할당량이 0인지 확인하거나, 결제 수단이 등록된 다른 프로젝트의 키를 사용해 보세요.";
+        msg = "⚠️ 할당량 부족(Limit: 0): 이 키는 텍스트는 가능하지만 이미지 생성 권한이 막혀있습니다. 구글 클라우드 콘솔에서 결제 계정을 연결(무료 범위 유지 가능)하거나 할당량을 확인해야 합니다.";
       } else if (msg.includes("429")) {
         msg = "요청이 너무 많습니다(429). 잠시 후 다시 시도하세요.";
-      } else if (msg.includes("403") || msg.includes("404")) {
-        msg = "인증 실패: 잘못된 API 키이거나 모델 권한이 없습니다.";
+      } else {
+        msg = "API 인증 실패: 키가 잘못되었거나 모델에 접근할 수 없습니다.";
       }
       
       setTestErrorMessage(msg);
-    }
-  };
-
-  const handleOpenKeySelect = async () => {
-    try {
-      if (window.aistudio?.openSelectKey) {
-        await window.aistudio.openSelectKey();
-        setApiStatus('success');
-        setVerifiedEngine(aiEngine);
-        setTestErrorMessage(null);
-      }
-    } catch (err) {
-      setApiStatus('error');
     }
   };
 
@@ -254,7 +242,7 @@ const App: React.FC = () => {
     setLoading(true);
     setGenerationError(null);
     let retryCount = 0;
-    const maxRetries = 2; // 재시도 횟수 증가
+    const maxRetries = 2;
 
     const performGeneration = async (): Promise<void> => {
       try {
@@ -306,13 +294,9 @@ const App: React.FC = () => {
         }
       } catch (error: any) {
         const errorMsg = error.message || "";
-        
-        // 429 오류 및 재시도 로직 (지수 백오프)
         if ((errorMsg.includes("429") || errorMsg.toLowerCase().includes("quota")) && retryCount < maxRetries) {
           retryCount++;
-          const waitTime = Math.pow(2, retryCount) * 1000;
-          console.warn(`Retry ${retryCount} after ${waitTime}ms...`);
-          await new Promise(res => setTimeout(res, waitTime));
+          await new Promise(res => setTimeout(res, Math.pow(2, retryCount) * 1000));
           return performGeneration();
         }
         throw error;
@@ -325,9 +309,9 @@ const App: React.FC = () => {
       console.error(error);
       const msg = error.message || "";
       if (msg.toLowerCase().includes("limit: 0")) {
-        setGenerationError("⚠️ 할당량 제한 오류 (Limit: 0). 이 API 키는 이미지 생성 할당량이 0입니다. 프로젝트 설정에서 할당량을 확인하거나 다른 프로젝트의 키를 사용하세요.");
+        setGenerationError("⚠️ 이미지 생성 권한(Limit: 0) 오류입니다. 무료 API 키라도 외부 앱에서는 '결제 계정 연결'이 필수인 경우가 많습니다. 설정을 확인해 보세요.");
       } else if (msg.includes("429")) {
-        setGenerationError("요청 한도 초과 (429). 약 1분 후에 다시 시도해 주세요.");
+        setGenerationError("할당량 초과(429). 약 1분 후 다시 시도하세요.");
       } else {
         setGenerationError(`생성 실패: ${msg}`);
       }
@@ -360,7 +344,7 @@ const App: React.FC = () => {
       const aiMsg: Message = { id: (Date.now() + 1).toString(), sender: 'ai', text: response.text || "...", timestamp: new Date() };
       setMessages(prev => [...prev, aiMsg]);
     } catch (error: any) {
-      setMessages(prev => [...prev, { id: 'err', sender: 'ai', text: "메시지 전송 실패 (할당량 초과 가능성)", timestamp: new Date() }]);
+      setMessages(prev => [...prev, { id: 'err', sender: 'ai', text: "텍스트 전송 오류", timestamp: new Date() }]);
     }
   };
 
@@ -416,7 +400,7 @@ const App: React.FC = () => {
                   <UserCheck size={20} className="text-indigo-400 shrink-0" />
                   <div>
                     <p className="text-sm font-bold text-white">Gemini API 키 연결</p>
-                    <p className="text-[11px] text-gray-400 mt-1">API 연결 시 실제 이미지 생성 권한을 함께 테스트합니다.</p>
+                    <p className="text-[11px] text-gray-400 mt-1">배포 환경에서는 무료 키도 결제 계정 연결이 권장됩니다.</p>
                   </div>
                 </div>
                 
@@ -459,12 +443,12 @@ const App: React.FC = () => {
                   <button onClick={() => setAiEngine('flash')} className={`p-4 rounded-2xl border-2 flex flex-col gap-2 transition-all text-left ${aiEngine === 'flash' ? 'bg-indigo-600/20 border-indigo-500 shadow-lg shadow-indigo-600/10' : 'bg-white/5 border-white/5 text-gray-400 opacity-60'}`}>
                     <Zap size={18} className={aiEngine === 'flash' ? 'text-indigo-400' : 'text-gray-500'} />
                     <span className="font-bold text-sm">Flash 모드</span>
-                    <span className="text-[10px] text-gray-400 leading-tight">무료 등급 최적화</span>
+                    <span className="text-[10px] text-gray-400 leading-tight">무료 등급 (결제수단 연결 권장)</span>
                   </button>
                   <button onClick={() => setAiEngine('pro')} className={`p-4 rounded-2xl border-2 flex flex-col gap-2 transition-all text-left ${aiEngine === 'pro' ? 'bg-indigo-600/20 border-indigo-500 shadow-lg shadow-indigo-600/10' : 'bg-white/5 border-white/5 text-gray-400 opacity-60'}`}>
                     <Cpu size={18} className={aiEngine === 'pro' ? 'text-indigo-400' : 'text-gray-500'} />
                     <span className="font-bold text-sm">Pro 모드</span>
-                    <span className="text-[10px] text-gray-400 leading-tight">유료 결제 키 전용</span>
+                    <span className="text-[10px] text-gray-400 leading-tight">유료 결제 키 필수</span>
                   </button>
                 </div>
               </div>
@@ -474,14 +458,38 @@ const App: React.FC = () => {
                   <div className="flex items-center gap-2">
                     {apiStatus === 'success' ? <ShieldCheck size={16} className="text-green-500" /> : <ShieldAlert size={16} className={apiStatus === 'error' ? 'text-red-500' : 'text-gray-500'} />}
                     <span className={`text-xs font-bold uppercase tracking-widest ${apiStatus === 'success' ? 'text-green-500' : (apiStatus === 'error' ? 'text-red-500' : 'text-gray-500')}`}>
-                      {apiStatus === 'success' ? `${verifiedEngine?.toUpperCase()} 연결 성공` : (apiStatus === 'error' ? '연결 실패' : '상태 확인 중...')}
+                      {apiStatus === 'success' ? `${verifiedEngine?.toUpperCase()} 연결 성공` : (apiStatus === 'error' ? '연결 실패' : '키 입력 필요')}
                     </span>
                   </div>
                 </div>
+                
                 {apiStatus === 'error' && testErrorMessage && (
-                  <div className="flex gap-2 p-4 bg-red-500/10 border border-red-500/20 rounded-xl">
-                    <AlertTriangle size={18} className="text-red-500 shrink-0" />
-                    <p className="text-[11px] text-red-400 leading-relaxed font-medium">{testErrorMessage}</p>
+                  <div className="space-y-4">
+                    <div className="flex gap-2 p-4 bg-red-500/10 border border-red-500/20 rounded-xl">
+                      <AlertTriangle size={18} className="text-red-500 shrink-0" />
+                      <p className="text-[11px] text-red-400 leading-relaxed font-medium">{testErrorMessage}</p>
+                    </div>
+                    
+                    {testErrorMessage.includes("Limit: 0") && (
+                      <div className="p-4 bg-indigo-500/10 border border-indigo-500/20 rounded-xl space-y-3">
+                        <div className="flex items-center gap-2 text-indigo-400">
+                          <CreditCard size={14} />
+                          <span className="text-[11px] font-bold uppercase tracking-tight">무료 키 외부 사용 가이드</span>
+                        </div>
+                        <ul className="text-[10px] text-indigo-300/80 space-y-1.5 list-disc pl-4">
+                          <li>Netlify 배포 환경에서는 보안상 <b>구글 클라우드 결제 계정</b>이 연결된 프로젝트의 키만 이미지 생성을 허용하는 경우가 많습니다.</li>
+                          <li><a href="https://console.cloud.google.com/billing" target="_blank" className="underline font-bold text-indigo-300">결제 관리 페이지</a>에서 프로젝트에 카드를 연결해 보세요. (무료 사용량 이내면 0원 청구)</li>
+                          <li>혹은 <a href="https://console.cloud.google.com/apis/api/generativelanguage.googleapis.com/quotas" target="_blank" className="underline font-bold text-indigo-300">할당량 페이지</a>에서 Imagen 할당량을 1 이상으로 요청해 보세요.</li>
+                        </ul>
+                        <a 
+                          href="https://console.cloud.google.com/apis/api/generativelanguage.googleapis.com/quotas" 
+                          target="_blank" 
+                          className="w-full py-2 bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-400 text-[10px] font-bold rounded-lg flex items-center justify-center gap-1 transition-all"
+                        >
+                          할당량/결제 설정 바로가기 <ArrowUpRight size={10} />
+                        </a>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -577,11 +585,16 @@ const App: React.FC = () => {
               </div>
 
               {generationError && (
-                <div className="mx-6 mb-4 p-4 bg-red-500/10 border border-red-500/20 rounded-2xl flex gap-3 animate-in slide-in-from-bottom-2">
-                  <AlertCircle className="text-red-500 shrink-0" size={18} />
-                  <div className="space-y-1">
-                    <p className="text-xs font-bold text-red-500 uppercase tracking-tighter">생성 실패 (할당량 제한)</p>
-                    <p className="text-[11px] text-red-400/90 leading-relaxed">{generationError}</p>
+                <div className="mx-6 mb-4 p-4 bg-red-500/10 border border-red-500/20 rounded-2xl flex flex-col gap-2 animate-in slide-in-from-bottom-2">
+                  <div className="flex gap-3">
+                    <AlertCircle className="text-red-500 shrink-0" size={18} />
+                    <div className="space-y-1">
+                      <p className="text-xs font-bold text-red-500 uppercase tracking-tighter">생성 실패 (할당량 이슈)</p>
+                      <p className="text-[11px] text-red-400/90 leading-relaxed">{generationError}</p>
+                    </div>
+                  </div>
+                  <div className="mt-1 p-2 bg-indigo-500/10 border border-indigo-500/20 rounded-xl">
+                     <p className="text-[10px] text-indigo-300 font-medium">우측 상단 톱니바퀴 아이콘을 클릭하여 해결 방법을 확인하세요.</p>
                   </div>
                 </div>
               )}
