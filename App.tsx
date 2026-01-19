@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   Wand2, 
   Paintbrush, 
@@ -14,24 +14,19 @@ import {
   Menu,
   X,
   Sparkles,
-  Plus,
   Trash2,
   Layers,
-  AlertCircle,
   Loader2,
   CheckCircle2,
   Settings,
-  Download,
   RefreshCw,
   Send,
   Key,
   ExternalLink,
   ShieldCheck,
   ShieldAlert,
-  Info,
   Cpu,
   Zap,
-  ChevronRight,
   HelpCircle,
   UserCheck
 } from 'lucide-react';
@@ -40,6 +35,19 @@ import ImageUpload from './components/ImageUpload';
 import LoadingOverlay from './components/LoadingOverlay';
 import ResultDisplay from './components/ResultDisplay';
 import { GoogleGenAI } from "@google/genai";
+
+// TypeScript 전역 선언을 통한 빌드 오류 방지
+// aistudio는 이미 AIStudio 타입으로 정의되어 있으므로 해당 타입을 사용하도록 수정합니다.
+declare global {
+  namespace NodeJS {
+    interface ProcessEnv {
+      API_KEY: string;
+    }
+  }
+  interface Window {
+    aistudio: AIStudio;
+  }
+}
 
 const SidebarItem: React.FC<{ 
   icon: any, 
@@ -72,12 +80,10 @@ const App: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string | null>(null);
   
-  // Model Config State
   const [aiEngine, setAiEngine] = useState<'flash' | 'pro'>('flash');
   
   const [image1, setImage1] = useState<File | null>(null);
   const [image2, setImage2] = useState<File | null>(null);
-  // FIX: Added characterAvatarUrl state to fix undefined error on line 458
   const [characterAvatarUrl, setCharacterAvatarUrl] = useState<string | null>(null);
   const [itemImages, setItemImages] = useState<(File | null)[]>([null]); 
   const [prompt, setPrompt] = useState("");
@@ -90,7 +96,6 @@ const App: React.FC = () => {
 
   const [apiStatus, setApiStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
 
-  // FIX: Added effect to handle the character avatar URL lifecycle from image1
   useEffect(() => {
     if (image1) {
       const url = URL.createObjectURL(image1);
@@ -101,12 +106,9 @@ const App: React.FC = () => {
     }
   }, [image1]);
 
-  // API Key 선택 여부 체크 (최초 로드 시)
   useEffect(() => {
     const checkInitialKey = async () => {
-      // @ts-ignore
       if (window.aistudio?.hasSelectedApiKey) {
-        // @ts-ignore
         const hasKey = await window.aistudio.hasSelectedApiKey();
         if (!hasKey && !process.env.API_KEY) {
           setIsSettingsOpen(true);
@@ -120,13 +122,10 @@ const App: React.FC = () => {
 
   const handleOpenKeySelect = async () => {
     try {
-      // @ts-ignore
       if (window.aistudio?.openSelectKey) {
-        // @ts-ignore
         await window.aistudio.openSelectKey();
-        // 지침에 따라 호출 성공 시 즉시 선택된 것으로 간주하고 진행
         setApiStatus('success');
-        setIsSettingsOpen(false); // 선택 후 바로 메인 앱으로 진입 시도
+        setIsSettingsOpen(false);
       }
     } catch (err) {
       console.error("키 선택 창 열기 실패:", err);
@@ -136,7 +135,6 @@ const App: React.FC = () => {
   const handleTestConnection = async () => {
     setApiStatus('testing');
     try {
-      // FIX: Use process.env.API_KEY directly for initialization as per guidelines
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
@@ -147,7 +145,6 @@ const App: React.FC = () => {
       }
     } catch (err: any) {
       setApiStatus('error');
-      // "Requested entity was not found" 에러 시 키 재선택 유도
       if (err.message?.includes("not found")) {
         alert("선택된 프로젝트가 유효하지 않습니다. 다시 키를 선택해 주세요.");
         handleOpenKeySelect();
@@ -186,7 +183,6 @@ const App: React.FC = () => {
 
     setLoading(true);
     try {
-      // FIX: Create new GoogleGenAI instance using process.env.API_KEY directly
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const parts: any[] = [];
       let systemTask = "";
@@ -249,7 +245,6 @@ const App: React.FC = () => {
     const currentInput = chatInput; setChatInput("");
     
     try {
-      // FIX: Use process.env.API_KEY directly as per guidelines
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const parts: any[] = [];
       if (image1) parts.push(await fileToPart(image1));
@@ -295,7 +290,6 @@ const App: React.FC = () => {
     <div className="flex h-screen w-full bg-[#030712] text-gray-100 font-sans overflow-hidden">
       {loading && <LoadingOverlay />}
       
-      {/* Settings Modal */}
       {isSettingsOpen && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={() => setIsSettingsOpen(false)}></div>
@@ -309,7 +303,6 @@ const App: React.FC = () => {
             </div>
             
             <div className="p-8 space-y-8 overflow-y-auto custom-scrollbar max-h-[75vh]">
-              {/* User Key Usage Guide */}
               <div className="bg-indigo-500/10 border border-indigo-500/20 p-6 rounded-2xl space-y-4">
                 <div className="flex gap-3">
                   <UserCheck size={20} className="text-indigo-400 shrink-0" />
@@ -332,7 +325,6 @@ const App: React.FC = () => {
                 </div>
               </div>
 
-              {/* Engine Selection */}
               <div className="space-y-4">
                 <label className="text-xs font-bold text-gray-400 uppercase tracking-widest">AI 이미지 엔진 선택</label>
                 <div className="grid grid-cols-2 gap-3">
